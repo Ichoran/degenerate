@@ -5,6 +5,9 @@ package degen
 
 import collection.mutable.{AnyRefMap => RMap}
 
+class StringBit(val source: String, val i0: Int, val iN: Int) {}
+class ArrayIntBit(val source: Array[Int], val i0: Int, val iN: Int) {}
+
 trait Interpretation[A] {
   def hash(a: A): Int
   def str(a: A): String
@@ -17,50 +20,120 @@ object Interpretation {
 trait Grammer[A] extends Interpretation[A] {
   def len(a: A): Int
   def cut(a: A, i: Int, n: Int): A
-  def numeq(a: A, i: Int, aa: A, j: Int): Int
+  def extra(a: A, b: A): Int
 }
 object Grammer {
-  implicit val stringGrammer = new Grammer[String] {
-    def len(a: String) = a.length
-    def cut(a: String, i: Int, n: Int) = a.substring(i, i+n)
-    def hash(a: String) = scala.util.hashing.MurmurHash3.stringHash(a)
-    def str(a: String) = a
-    def eqto(a: String, o: Any) = a == o
-    def numeq(a: String, i: Int, aa: String, j: Int): Int = {
-      var m = i
-      var n = j
-      while (m < a.length && n < aa.length && a.charAt(m) == aa.charAt(n)) { m += 1; n += 1 }
-      m - i
+  implicit val substringGrammer = new Grammer[StringBit] {
+    def len(a: StringBit) = a.iN - a.i0
+    def cut(a: StringBit, i: Int, n: Int) = {
+      val j = math.max(0, math.min(a.i0.toLong + i, a.source.length))
+      val m = math.min(j+n, a.source.length)
+      new StringBit(a.source, j.toInt, m.toInt)
     }
-  }
-  implicit val arrayIntGrammer = new Grammer[Array[Int]] {
-    def len(a: Array[Int]) = a.length
-    def cut(a: Array[Int], i: Int, n: Int) = java.util.Arrays.copyOfRange(a, i, i+n)
-    def hash(a: Array[Int]) = {
-      var h = scala.util.hashing.MurmurHash3.arraySeed
-      var i = 0
-      while (i+1 < a.length) {
-        h = scala.util.hashing.MurmurHash3.mix(h, a(i))
-        i += 1
+    def hash(a: StringBit) = {
+      var h = scala.util.hashing.MurmurHash3.stringSeed
+      var i = a.i0
+      while (i < a.iN-1) {
+        h = scala.util.hashing.MurmurHash3.mix(h, (a.source.charAt(i) << 16) + a.source.charAt(i+1))
+        i += 2
       }
-      if (i < a.length) h = scala.util.hashing.MurmurHash3.mixLast(h, a(i))
-      scala.util.hashing.MurmurHash3.finalizeHash(h, a.length)
+      if (i < a.iN) h = scala.util.hashing.MurmurHash3.mixLast(h, a.source.charAt(i))
+      scala.util.hashing.MurmurHash3.finalizeHash(h, a.iN - a.i0)
     }
-    def str(a: Array[Int]) = a.mkString(", ")
-    def eqto(a: Array[Int], o: Any): Boolean = o match {
-      case b: Array[Int] =>
-        a.length == b.length && {
-          var i = 0
-          while (i < a.length) { if (a(i) != b(i)) return false; i += 1 }
+    def str(a: StringBit) = a.source.substring(a.i0, a.iN)
+    def eqto(a: StringBit, o: Any): Boolean = o match {
+      case b: StringBit =>
+        if (len(a) != len(b)) false
+        else if ((a.source eq b.source) && a.i0 == b.i0 && a.iN == b.iN) true
+        else {
+          var i = a.i0
+          var j = b.i0
+          val as = a.source
+          val bs = b.source
+          while (i < a.iN) {
+            if (as.charAt(i) != bs.charAt(j)) return false
+            i += 1
+            j += 1
+          }
+          true
+        }
+      case s: String =>
+        if (s.length != len(a)) false
+        else {
+          var i = a.i0
+          var j = 0
+          while (j < s.length) {
+            if (a.source.charAt(i) != s.charAt(j)) return false
+            i += 1
+            j += 1
+          }
           true
         }
       case _ => false
     }
-    def numeq(a: Array[Int], i: Int, aa: Array[Int], j: Int): Int = {
-      var m = i
-      var n = j
-      while (m < a.length && n < aa.length && a(m) == aa(n)) { m += 1; n += 1 }
-      m - i
+    def extra(a: StringBit, b: StringBit): Int = {
+      if ((a.source eq b.source) && a.iN == b.iN) a.source.length - a.iN
+      else {
+        var i = a.iN
+        var j = b.iN
+        while (i < a.source.length && j < b.source.length && a.source.charAt(i) == b.source.charAt(j)) { i += 1; j += 1 }
+        i - a.iN
+      }
+    }
+  }
+  implicit val subarrayIntGrammer = new Grammer[ArrayIntBit] {
+    def len(a: ArrayIntBit) = a.iN - a.i0
+    def cut(a: ArrayIntBit, i: Int, n: Int) = {
+      val j = math.max(0, math.min(a.i0.toLong + i, a.source.length))
+      val m = math.min(j+n, a.source.length)
+      new ArrayIntBit(a.source, j.toInt, m.toInt)
+    }
+    def hash(a: ArrayIntBit) = {
+      var h = scala.util.hashing.MurmurHash3.arraySeed
+      var i = a.i0
+      while (i < a.iN-1) {
+        h = scala.util.hashing.MurmurHash3.mix(h, a.source(i))
+        i += 1
+      }
+      if (i < a.iN) h = scala.util.hashing.MurmurHash3.mixLast(h, a.source(i))
+      scala.util.hashing.MurmurHash3.finalizeHash(h, len(a))
+    }
+    def str(a: ArrayIntBit) = {
+      val sb = new StringBuilder
+      sb += '{'
+      var i = a.i0
+      while (i < a.iN) { 
+        if (i > a.i0) sb ++= ", "
+        sb ++= a.source(i).toString
+      }
+      sb += '}'
+      sb.result()
+    }
+    def eqto(a: ArrayIntBit, o: Any): Boolean = o match {
+      case b: ArrayIntBit =>
+        len(a) == len(b) && {
+          var i = a.i0
+          var j = b.i0
+          while (i < a.iN) { if (a.source(i) != b.source(j)) return false; i += 1; j += 1 }
+          true
+        }
+      case b: Array[Int] =>
+        len(a) == b.length && {
+          var i = a.i0
+          var j = 0
+          while (j < b.length) { if (a.source(i) != b(j)) return false; i += 1; j += 1 }
+          true
+        }
+      case _ => false
+    }
+    def extra(a: ArrayIntBit, b: ArrayIntBit): Int = {
+      if ((a.source eq b.source) && a.iN == b.iN) a.source.length - a.iN
+      else {
+        var i = a.iN
+        var j = b.iN
+        while (i < a.source.length && j < b.source.length && a.source(i) == b.source(j)) { i += 1; j += 1 }
+        i - a.iN        
+      }
     }
   }
 }
@@ -85,7 +158,11 @@ class NGram[A: Interpretation](val text: A) {
   private[this] var isSorted = true
   private[this] var myIndices = new Array[Int](6)
   private[this] def checkSize(): this.type = {
-    if (mySize >= myIndices.length) myIndices = java.util.Arrays.copyOf(myIndices, ((myIndices.length << 1) | 2) & 0x7FFFFFFE)
+    if (mySize >= myIndices.length) {
+      var L = myIndices.length
+      while ((mySize & 0x7FFFFFFE) >= L) L = ((L << 1) | 2) & 0x7FFFFFFE
+      myIndices = java.util.Arrays.copyOf(myIndices, L)
+    }
     this
   }
   def size = mySize
@@ -105,12 +182,27 @@ class NGram[A: Interpretation](val text: A) {
     mySize += 1
     this
   }
+  def ++=(source: Array[Int], i0: Int, iN: Int): this.type = {
+    var j = mySize
+    mySize += (iN - i0) - 1
+    checkSize()
+    var i = i0
+    while (i < iN) {
+      myIndices(j) = source(i)
+      if (isSorted && j > 0 && myIndices(j-1) > myIndices(j)) isSorted = false
+      i += 1
+      j += 1
+    }
+    mySize += 1
+    this
+  }
+  def ++=(source: Array[Int]): this.type = this ++= (source, 0, source.length)
   override def toString = myIndices.iterator.take(mySize).mkString("'"+interpretation.str(text)+"'{", ",","}")
 }
 object NGram {
   import CachedHashed._
   def apply[A: Grammer](a: A): RMap[CachedHashed[A], NGram[A]] = {
-    val m = new RMap[CachedHashed[A], NGram[A]]
+    val m, minim = new RMap[CachedHashed[A], NGram[A]]
     val temp = new collection.mutable.ArrayBuffer[CachedHashed[A]]
     val gm = implicitly[Grammer[A]]
     var i = 0
@@ -124,29 +216,51 @@ object NGram {
     temp.foreach{ k => m -= k }
     temp.clear
     var source: Array[CachedHashed[A]] = m.keys.toArray
+    val b, c = gm.cut(a, 0, 0)
     while (source.nonEmpty) {
       source.foreach{ k =>
-        val d = gm.len(k.value)
-        m(k).toIndexArray.
-          collect{ case j if j+d < L => (gm.cut(a, j+d, 1).cached, j+d) }.
-          groupBy(_._1).foreach{ case (_, vs) =>
-            if (vs.length > 1) {
-              vs.groupBy(v => gm.numeq(a, v._2, a, if (v._2 == vs(0)._2) vs(1)._2 else vs(0)._2)).foreach{ case (n, us) => 
-                if (us.length > 1) {
-                  val kk = gm.cut(a, us(0)._2 - d, d + n).cached
-                  temp += kk
-                  val x = new NGram[A](kk.value)
-                  var ui = 0
-                  while (ui < us.length) { x += (us(ui)._2 - d); ui += 1 }
-                  m += (kk, x)
-                }
-              }
+        val l = gm.len(k.value)
+        val ixs = m(k).toIndexArray
+        var least = Int.MaxValue
+        var j = 1
+        while (j < ixs.length && least > 0) {
+          val n = gm.extra(k.value, gm.cut(a, ixs(j), l))
+          least = math.min(least, n)
+          j += 1
+        }
+        if (least > 0) {
+          val kk = gm.cut(a, ixs(0), l + least).cached
+          m -= k
+          m += (kk, (new NGram(kk.value)) ++= ixs)
+          temp += kk
+        }
+        else {
+          ixs.groupBy(i => gm.cut(a, i+l, 1).cached).foreach{ case (_, iys) =>
+            if (iys.length > 1) {
+              val kk = gm.cut(a, iys(0), l+1).cached
+              m += (kk, (new NGram(kk.value)) ++= iys)
+              temp += kk
             }
           }
+        }
       }
       source = temp.toArray
       temp.clear
     }
+    m.foreach{ case (k,ng) =>
+      val l = gm.len(k.value)
+      if (l > 1 && ng(0) > 0) {
+        val probe = gm.cut(a, ng(0)-1, l+1).cached
+        m.get(probe) match {
+          case Some(xg) =>
+            if (ng.size == xg.size && (0 until ng.size).forall(i => ng(i) == xg(i)+1)) {
+              temp += k
+            }
+          case _ =>
+        }
+      }
+    }
+    temp.foreach{ k => m -= k }
     m
   }
 }
