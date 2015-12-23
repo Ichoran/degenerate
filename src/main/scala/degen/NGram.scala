@@ -10,10 +10,14 @@ trait Interpretation[A] {
   def str(a: A): String
   def eqto(a: A, o: Any): Boolean  
 }
+object Interpretation {
+  implicit def searchGrammers[A](implicit gm: Grammer[A]): Interpretation[A] = gm
+}
 
 trait Grammer[A] extends Interpretation[A] {
   def len(a: A): Int
   def cut(a: A, i: Int, n: Int): A
+  def numeq(a: A, i: Int, aa: A, j: Int): Int
 }
 object Grammer {
   implicit val stringGrammer = new Grammer[String] {
@@ -22,6 +26,12 @@ object Grammer {
     def hash(a: String) = scala.util.hashing.MurmurHash3.stringHash(a)
     def str(a: String) = a
     def eqto(a: String, o: Any) = a == o
+    def numeq(a: String, i: Int, aa: String, j: Int): Int = {
+      var m = i
+      var n = j
+      while (m < a.length && n < aa.length && a.charAt(m) == aa.charAt(n)) { m += 1; n += 1 }
+      m - i
+    }
   }
   implicit val arrayIntGrammer = new Grammer[Array[Int]] {
     def len(a: Array[Int]) = a.length
@@ -46,6 +56,12 @@ object Grammer {
         }
       case _ => false
     }
+    def numeq(a: Array[Int], i: Int, aa: Array[Int], j: Int): Int = {
+      var m = i
+      var n = j
+      while (m < a.length && n < aa.length && a(m) == aa(n)) { m += 1; n += 1 }
+      m - i
+    }
   }
 }
 
@@ -53,13 +69,18 @@ class CachedHashed[A](val value: A)(implicit interp: Interpretation[A]) {
   def interpretation = interp
   override lazy val hashCode = interp.hash(value)
   override lazy val toString = interp.str(value)
-  override def equals(a: Any) = value match {
+  override def equals(a: Any) = a match {
     case ch: CachedHashed[_] => interp.eqto(value, ch.value)
     case _                   => interp.eqto(value, a)
   }
+  def cached: this.type = this
+}
+object CachedHashed {
+  implicit def cacheIfInterpretable[A](value: A)(implicit interp: Interpretation[A]) = new CachedHashed[A](value)
 }
 
-class NGram[A](val text: A) {
+class NGram[A: Interpretation](val text: A) {
+  def interpretation = implicitly[Interpretation[A]]
   private[this] var mySize = 0
   private[this] var isSorted = true
   private[this] var myIndices = new Array[Int](6)
@@ -76,13 +97,56 @@ class NGram[A](val text: A) {
     if (!isSorted) { isSorted = true; java.util.Arrays.sort(myIndices, 0, mySize) }
     System.arraycopy(myIndices, 0, target, i0, mySize)
   }
-  def +=(x: Int) {
+  def toIndexArray: Array[Int] = { val a = new Array[Int](size); export(a, 0); a }
+  def +=(x: Int): this.type = {
     checkSize()
     myIndices(mySize) = x
     if (isSorted && mySize > 0 && myIndices(mySize-1) > x) isSorted = false
     mySize += 1
+    this
   }
+  override def toString = myIndices.iterator.take(mySize).mkString("'"+interpretation.str(text)+"'{", ",","}")
 }
 object NGram {
-  def apply[A: Grammer]: RMap[CachedHashed[A], NGram[A]] = ???
+  import CachedHashed._
+  def apply[A: Grammer](a: A): RMap[CachedHashed[A], NGram[A]] = {
+    val m = new RMap[CachedHashed[A], NGram[A]]
+    val temp = new collection.mutable.ArrayBuffer[CachedHashed[A]]
+    val gm = implicitly[Grammer[A]]
+    var i = 0
+    val L = gm.len(a)
+    while (i < L) {
+      val ai = gm.cut(a, i, 1)
+      m.getOrElseUpdate(ai.cached, new NGram[A](ai)) += i
+      i += 1
+    }
+    m.foreach{ case (k, ng) => if (ng.size <= 1) temp += k }
+    temp.foreach{ k => m -= k }
+    temp.clear
+    var source: Array[CachedHashed[A]] = m.keys.toArray
+    while (source.nonEmpty) {
+      source.foreach{ k =>
+        val d = gm.len(k.value)
+        m(k).toIndexArray.
+          collect{ case j if j+d < L => (gm.cut(a, j+d, 1).cached, j+d) }.
+          groupBy(_._1).foreach{ case (_, vs) =>
+            if (vs.length > 1) {
+              vs.groupBy(v => gm.numeq(a, v._2, a, if (v._2 == vs(0)._2) vs(1)._2 else vs(0)._2)).foreach{ case (n, us) => 
+                if (us.length > 1) {
+                  val kk = gm.cut(a, us(0)._2 - d, d + n).cached
+                  temp += kk
+                  val x = new NGram[A](kk.value)
+                  var ui = 0
+                  while (ui < us.length) { x += (us(ui)._2 - d); ui += 1 }
+                  m += (kk, x)
+                }
+              }
+            }
+          }
+      }
+      source = temp.toArray
+      temp.clear
+    }
+    m
+  }
 }
